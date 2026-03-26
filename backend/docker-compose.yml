@@ -1,0 +1,172 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────
+#  MERN E-Commerce – Full Stack Docker Compose
+#
+#  Infrastructure (always needed):
+#    mongodb, redis, rabbitmq
+#
+#  Microservices (node containers):
+#    api-gateway, product-service, user-service,
+#    order-service, inventory-service, payment-service
+#
+#  Usage:
+#    Start everything:   docker-compose up --build
+#    Infrastructure only: docker-compose up -d mongodb redis rabbitmq
+# ─────────────────────────────────────────────────────────────────────
+
+x-service-env: &service-env
+  MONGO_URI: mongodb://mongodb:27017/huxnStore
+  REDIS_URL: redis://redis:6379
+  RABBITMQ_URL: amqp://rabbitmq
+  JWT_SECRET: ${JWT_SECRET:-change_this_in_production}
+  NODE_ENV: ${NODE_ENV:-development}
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - ecommerce-net
+  depends_on:
+    - mongodb
+    - redis
+    - rabbitmq
+
+services:
+  # ──────────────────────────────────────────────────
+  # Infrastructure
+  # ──────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: ecommerce_mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - ecommerce-net
+    environment:
+      MONGO_INITDB_DATABASE: huxnStore
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - ecommerce-net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ecommerce_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────────
+  # Microservices
+  # ──────────────────────────────────────────────────
+  product-service:
+    <<: *service-defaults
+    container_name: ecommerce_product
+    build:
+      context: ./services/product-service
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    environment:
+      <<: *service-env
+      PRODUCT_SERVICE_PORT: 5001
+
+  user-service:
+    <<: *service-defaults
+    container_name: ecommerce_user
+    build:
+      context: ./services/user-service
+      dockerfile: Dockerfile
+    ports:
+      - "5005:5005"
+    environment:
+      <<: *service-env
+      USER_SERVICE_PORT: 5005
+
+  order-service:
+    <<: *service-defaults
+    container_name: ecommerce_order
+    build:
+      context: ./services/order-service
+      dockerfile: Dockerfile
+    ports:
+      - "5002:5002"
+    environment:
+      <<: *service-env
+      ORDER_SERVICE_PORT: 5002
+
+  inventory-service:
+    <<: *service-defaults
+    container_name: ecommerce_inventory
+    build:
+      context: ./services/inventory-service
+      dockerfile: Dockerfile
+    environment:
+      <<: *service-env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  payment-service:
+    <<: *service-defaults
+    container_name: ecommerce_payment
+    build:
+      context: ./services/payment-service
+      dockerfile: Dockerfile
+    environment:
+      <<: *service-env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  api-gateway:
+    <<: *service-defaults
+    container_name: ecommerce_gateway
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      <<: *service-env
+      GATEWAY_PORT: 5000
+      PRODUCT_SERVICE_URL: http://product-service:5001
+      USER_SERVICE_URL: http://user-service:5005
+      ORDER_SERVICE_URL: http://order-service:5002
+    depends_on:
+      - product-service
+      - user-service
+      - order-service
+
+volumes:
+  mongodb_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  ecommerce-net:
+    driver: bridge

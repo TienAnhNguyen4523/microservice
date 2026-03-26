@@ -1,0 +1,40 @@
+{
+  "name": "mern-ecommerce",
+  "version": "1.0.0",
+  "description": "MERN E-Commerce – Microservices Architecture",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "services/api-gateway",
+    "services/product-service",
+    "services/user-service",
+    "services/order-service",
+    "services/inventory-service",
+    "services/payment-service"
+  ],
+  "scripts": {
+    "dev": "concurrently -n gateway,product,user,order,inventory,payment -c cyan,green,yellow,blue,magenta,red,white \"npm run dev:gateway\" \"npm run dev:product\" \"npm run dev:user\" \"npm run dev:order\" \"npm run dev:inventory\" \"npm run dev:payment\" ",
+    "dev:gateway": "npm run dev --workspace services/api-gateway",
+    "dev:product": "npm run dev --workspace services/product-service",
+    "dev:user": "npm run dev --workspace services/user-service",
+    "dev:order": "npm run dev --workspace services/order-service",
+    "dev:inventory": "npm run dev --workspace services/inventory-service",
+    "dev:payment": "npm run dev --workspace services/payment-service",
+    "start": "concurrently -n gateway,product,user,order,inventory,payment \"npm run start:gateway\" \"npm run start:product\" \"npm run start:user\" \"npm run start:order\" \"npm run start:inventory\" \"npm run start:payment\"",
+    "start:gateway": "npm run start --workspace services/api-gateway",
+    "start:product": "npm run start --workspace services/product-service",
+    "start:user": "npm run start --workspace services/user-service",
+    "start:order": "npm run start --workspace services/order-service",
+    "start:inventory": "npm run start --workspace services/inventory-service",
+    "start:payment": "npm run start --workspace services/payment-service",
+    "infra:up": "docker-compose up -d mongodb redis rabbitmq",
+    "infra:down": "docker-compose down",
+    "infra:logs": "docker-compose logs -f redis rabbitmq",
+    "install:all": "npm install && npm install --workspace services/api-gateway && npm install --workspace services/product-service && npm install --workspace services/user-service && npm install --workspace services/order-service && npm install --workspace services/inventory-service && npm install --workspace services/payment-service"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.9",
+    "concurrently": "^8.2.2",
+    "ioredis": "^5.10.1"
+  }
+}
