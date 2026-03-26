@@ -15,7 +15,7 @@
 import Product from "../models/productModel.js";
 import { get, set, del } from "../../shared/redis/client.js";
 
-// ─── Cache helpers ────────────────────────────────────────────────
+// Cache helpers
 
 /**
  * Build a deterministic cache key from query parameters.
@@ -43,7 +43,7 @@ const SORT_MAP = {
   oldest: { createdAt: 1 },
 };
 
-// ─── Service functions ────────────────────────────────────────────
+// Service functions
 
 /**
  * List products with full filter / paginate / search / sort / fields support.
@@ -114,7 +114,7 @@ export const fetchProductById = async (id) => {
   const cacheKey = `product:${id}`;
   const cached = await get(cacheKey);
   if (cached) {
-    console.log(`🟢 Cache HIT for product: ${id}`);
+    console.log(`Cache HIT for product: ${id}`);
     return cached;
   }
 

@@ -4,11 +4,14 @@ import * as orderService from "../services/orderService.js";
 export const createOrder = async (req, res) => {
   try {
     const { orderItems, shippingAddress, paymentMethod } = req.body;
+    const idempotencyKey = req.headers["x-idempotency-key"];
+    
     const order = await orderService.createOrder({
       orderItems,
       shippingAddress,
       paymentMethod,
       user: req.user,
+      idempotencyKey,
     });
     res.status(201).json(order);
   } catch (error) {

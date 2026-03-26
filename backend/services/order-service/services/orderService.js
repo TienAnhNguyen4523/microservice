@@ -47,21 +47,21 @@ const generateIdempotencyKey = (userId, orderItems) => {
 
 // Create Order
 
-export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, user }) => {
+export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, user, idempotencyKey }) => {
   if (!orderItems || orderItems.length === 0) {
     throw new Error("No order items");
   }
 
-  // Generate idempotency key to prevent duplicate orders
-  const idempotencyKey = generateIdempotencyKey(
+  // Use provided idempotency key from header or fallback to generating one
+  const finalIdempotencyKey = idempotencyKey || generateIdempotencyKey(
     user._id.toString(),
     orderItems.map((i) => ({ product: i.product.toString(), qty: i.qty }))
   );
 
   // Check if this exact order was already placed
-  const existing = await Order.findOne({ idempotencyKey });
+  const existing = await Order.findOne({ idempotencyKey: finalIdempotencyKey });
   if (existing) {
-    console.log(`Duplicate order detected (idempotencyKey: ${idempotencyKey}). Returning existing order.`);
+    console.log(`Duplicate order detected (idempotencyKey: ${finalIdempotencyKey}). Returning existing order.`);
     return existing;
   }
 
@@ -78,7 +78,7 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
     shippingPrice,
     totalPrice,
     status: "PENDING",
-    idempotencyKey,
+    idempotencyKey: finalIdempotencyKey,
   });
 
   const savedOrder = await order.save();
@@ -99,7 +99,7 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
   return savedOrder;
 };
 
-// ─── Consume Payment Results ───────────────────────────────────
+// Consume Payment Results
 
 /**
  * Listen for PAYMENT_SUCCESS and PAYMENT_FAILED events from payment-service.
@@ -108,13 +108,26 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
 export const consumePaymentEvents = async () => {
   // Success handler
   await consume("PAYMENT_SUCCESS", async ({ orderId }) => {
-    console.log(`Payment succeeded for order: ${orderId}`);
-    await Order.findByIdAndUpdate(orderId, {
-      status: "CONFIRMED",
-      isPaid: true,
-      paidAt: new Date(),
-    });
-    console.log(`Order ${orderId} marked as CONFIRMED`);
+    console.log(`Payment success event received for order: ${orderId}`);
+    
+    const order = await Order.findById(orderId);
+    if (!order) {
+      console.warn(`Order ${orderId} not found during payment success processing!`);
+      return;
+    }
+    
+    // Webhook Idempotency & Consistency check
+    if (order.isPaid) {
+      console.log(`Idempotency triggered: Order ${orderId} is already marked as PAID. Ignoring duplicate payment webhook.`);
+      return;
+    }
+
+    order.status = "CONFIRMED";
+    order.isPaid = true;
+    order.paidAt = new Date();
+    await order.save();
+    
+    console.log(`Order ${orderId} successfully updated to CONFIRMED`);
   });
 
   // Failure handler
@@ -125,7 +138,7 @@ export const consumePaymentEvents = async () => {
   });
 };
 
-// ─── Query helpers ─────────────────────────────────────────────
+// Query helpers
 
 export const getAllOrders = async () =>
   Order.find({}).populate("user", "id username");

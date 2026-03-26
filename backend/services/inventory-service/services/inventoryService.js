@@ -14,7 +14,7 @@
 import mongoose from "mongoose";
 import { consume, publish } from "../../shared/rabbitmq/connection.js";
 
-// ─── Product model (inline for this service) ───────────────────
+// Product model (inline for this service)
 const productSchema = new mongoose.Schema({
   name: String,
   quantity: Number,
@@ -31,7 +31,7 @@ const productSchema = new mongoose.Schema({
 
 const Product = mongoose.models.Product || mongoose.model("Product", productSchema);
 
-// ─── Event handler ─────────────────────────────────────────────
+// Event handle
 
 export const startInventoryConsumer = async () => {
   await consume("ORDER_CREATED", async (orderPayload) => {
@@ -39,35 +39,41 @@ export const startInventoryConsumer = async () => {
     console.log(`inventory-service: processing ORDER_CREATED for order ${orderId}`);
 
     try {
-      // Check stock availability for all items first
+      // 1. Reserve stock using atomic updates to prevent Overselling
+      const reservedItems = [];
+      let reservationFailed = false;
+      let failureReason = "";
+
       for (const item of orderItems) {
-        const product = await Product.findById(item.product);
+        // Atomic decrement: only succeeds if countInStock >= item.qty
+        const updatedProduct = await Product.findOneAndUpdate(
+          { _id: item.product, countInStock: { $gte: item.qty } },
+          { $inc: { countInStock: -item.qty } },
+          { new: true }
+        );
 
-        if (!product) {
-          console.error(`Product not found: ${item.product}`);
-          await publish("STOCK_FAILED", { orderId, reason: `Product ${item.product} not found` });
-          return;
+        if (!updatedProduct) {
+          // Failed to reserve this item! (either not found or insufficient stock)
+          reservationFailed = true;
+          failureReason = `Insufficient stock for product: ${item.product}`;
+          break;
         }
+        reservedItems.push(item);
+      }
 
-        if (product.countInStock < item.qty) {
-          console.warn(`Insufficient stock: ${product.name} has ${product.countInStock}, need ${item.qty}`);
-          await publish("STOCK_FAILED", {
-            orderId,
-            reason: `Insufficient stock for product: ${product.name}`,
+      if (reservationFailed) {
+        // Rollback reserved items (Saga Compensation for partial success)
+        for (const item of reservedItems) {
+          await Product.findByIdAndUpdate(item.product, {
+            $inc: { countInStock: item.qty },
           });
-          return;
         }
+        console.warn(`Insufficient stock for order ${orderId}. Rolled back partial reservations.`);
+        await publish("STOCK_FAILED", { orderId, reason: failureReason });
+        return;
       }
 
-      // All items are available — reduce stock using atomic $inc operations
-      for (const item of orderItems) {
-        await Product.findByIdAndUpdate(item.product, {
-          $inc: { countInStock: -item.qty },
-        });
-        console.log(`Reduced stock for product ${item.product} by ${item.qty}`);
-      }
-
-      // Notify payment-service that stock is reserved
+      // 2. All items reserved successfully
       await publish("STOCK_RESERVED", {
         orderId,
         orderItems,
@@ -81,9 +87,25 @@ export const startInventoryConsumer = async () => {
     }
   });
 
-  // Also consume STOCK_FAILED from order-service to show correct log
+  // Saga Compensation: Restore inventory if Payment fails
+  await consume("PAYMENT_FAILED", async ({ orderId, reason, orderItems }) => {
+    console.log(`STOCK COMPENSATION: PAYMENT_FAILED for order ${orderId}: ${reason}`);
+    
+    // Restore stock if items were provided in the payload
+    if (orderItems && orderItems.length > 0) {
+      for (const item of orderItems) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { countInStock: item.qty },
+        });
+        console.log(`Restored +${item.qty} to product ${item.product}`);
+      }
+    } else {
+      console.warn(`Could not restore stock for ${orderId}: Missing orderItems in PAYMENT_FAILED payload`);
+    }
+  });
+
   await consume("STOCK_FAILED", async ({ orderId, reason }) => {
     console.log(`STOCK_FAILED for order ${orderId}: ${reason}`);
-    // Order service will listen separately if needed; this is just for logging
+    // Handled by order-service
   });
 };

@@ -12,9 +12,22 @@
 
 import { consume, publish } from "../../shared/rabbitmq/connection.js";
 
+// Simple memory store to simulate Redis idempotency locking against double charges
+const processedPayments = new Set();
+
 export const startPaymentConsumer = async () => {
   await consume("STOCK_RESERVED", async (payload) => {
-    const { orderId, totalPrice } = payload;
+    const { orderId, totalPrice, orderItems } = payload;
+
+    // 1. Idempotency Check: Prevent charging the user twice
+    if (processedPayments.has(orderId)) {
+      console.log(`payment-service: Idempotency triggered – Payment for ${orderId} already processed! Ignoring duplicate.`);
+      return;
+    }
+    
+    // Add to lock map
+    processedPayments.add(orderId);
+    
     console.log(`payment-service: processing payment for order ${orderId} ($${totalPrice})`);
 
     // Simulate async payment processing (e.g. network latency)
@@ -32,22 +45,20 @@ export const startPaymentConsumer = async () => {
       });
       console.log(`payment-service: PAYMENT_SUCCESS for order ${orderId}`);
     } else {
+      // Remove from lock to allow retry if they trigger Webhook again
+      processedPayments.delete(orderId);
+      
       await publish("PAYMENT_FAILED", {
         orderId,
         reason: "Payment declined by payment gateway (simulated)",
+        orderItems, // Send orderItems back to inventory-service for compensation!
       });
       console.log(`payment-service: PAYMENT_FAILED for order ${orderId}`);
     }
   });
 
-  // If stock reservation failed, order-service already handles it via STOCK_FAILED consumer
-  // Payment service can also listen if it wants to rollback any pre-auth
   await consume("STOCK_FAILED", async ({ orderId }) => {
     console.log(`payment-service: skipping payment for order ${orderId} (stock failed)`);
-    // No payment to process – publish PAYMENT_FAILED so order-service marks it as FAILED
-    await publish("PAYMENT_FAILED", {
-      orderId,
-      reason: "Stock reservation failed — payment not processed",
-    });
+    // No payment to process – order-service will handle STOCK_FAILED
   });
 };

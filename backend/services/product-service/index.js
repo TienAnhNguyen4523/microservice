@@ -11,6 +11,7 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
 import productRoutes from "./routes/productRoutes.js";
+import categoryRoutes from "./routes/categoryRoutes.js";
 import { connectRedis } from "../shared/redis/client.js";
 
 dotenv.config();
@@ -25,6 +26,7 @@ app.use(express.json());
 
 // ─── Routes ──────────────────────────────────────────────────
 app.use("/products", productRoutes);
+app.use("/category", categoryRoutes);
 
 // Health check
 app.get("/health", (_, res) => res.json({ service: "product-service", status: "ok" }));

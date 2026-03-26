@@ -19,7 +19,6 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import jwt from "jsonwebtoken";
-import mongoose from "mongoose";
 
 dotenv.config();
 
@@ -57,6 +56,14 @@ const authMiddleware = (req, res, next) => {
 
 // Public routes (no auth required)
 
+app.get("/api/config/paypal", (req, res) => {
+  res.send({ clientId: process.env.PAYPAL_CLIENT_ID || "sb" });
+});
+
+app.post("/api/upload", (req, res) => {
+  res.send({ message: "Image uploaded successfully", image: "/uploads/sample.jpg" });
+});
+
 // User registration / login – public
 app.use(
   "/api/users/register",
@@ -80,6 +87,16 @@ app.use(
     target: PRODUCT_URL,
     changeOrigin: true,
     pathRewrite: { "^/api/products": "/products" },
+    on: { error: (err, req, res) => res.status(502).json({ error: "product-service unavailable", detail: err.message }) },
+  })
+);
+
+app.use(
+  "/api/category",
+  createProxyMiddleware({
+    target: PRODUCT_URL,
+    changeOrigin: true,
+    pathRewrite: { "^/api/category": "/category" },
     on: { error: (err, req, res) => res.status(502).json({ error: "product-service unavailable", detail: err.message }) },
   })
 );
