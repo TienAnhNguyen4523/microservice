@@ -117,8 +117,25 @@ export const consume = async (routingKey, queueName, handler) => {
   // Assert the topic exchange exists
   await ch.assertExchange(EXCHANGE_NAME, "topic", { durable: true });
 
-  // Assert the specific queue for this consumer service
-  await ch.assertQueue(queueName, { durable: true });
+  // 1. Assert Dead Letter Exchange (DLX) and Queue (DLQ)
+  const DLX_NAME = "ecommerce_dlx";
+  const DLQ_NAME = "ecommerce_dlq";
+  await ch.assertExchange(DLX_NAME, "topic", { durable: true });
+  await ch.assertQueue(DLQ_NAME, { 
+    durable: true, 
+    arguments: { "x-queue-type": "quorum" } 
+  });
+  await ch.bindQueue(DLQ_NAME, DLX_NAME, "#"); // Bind catch-all DLQ to DLX
+
+  // 2. Assert the specific queue for this consumer service, using Quorum and linking DLX
+  await ch.assertQueue(queueName, { 
+    durable: true,
+    arguments: { 
+      "x-queue-type": "quorum", // High Availability Queue
+      "x-dead-letter-exchange": DLX_NAME,
+      // "x-dead-letter-routing-key": "" // Bỏ trống -> giữ nguyên original routing key
+    } 
+  });
 
   // Bind the queue to the exchange with the given routingKey
   await ch.bindQueue(queueName, EXCHANGE_NAME, routingKey);
@@ -139,7 +156,7 @@ export const consume = async (routingKey, queueName, handler) => {
         ch.ack(msg);
       } catch (error) {
         console.error(`Error handling message from Queue [${queueName}]:`, error.message);
-        // Nack without requeue to avoid infinite retry loop
+        // Nack without requeue -> Message is forwarded to DLX -> DLQ
         ch.nack(msg, false, false);
       }
     },

@@ -19,6 +19,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -33,6 +34,16 @@ const ORDER_URL   = process.env.ORDER_SERVICE_URL   || "http://localhost:5002";
 // Global Middleware
 app.use(cors({ credentials: true, origin: true }));
 app.use(cookieParser());
+
+// Trace ID Generator (Jaeger simulation)
+app.use((req, res, next) => {
+  const traceId = req.headers["x-trace-id"] || crypto.randomUUID();
+  req.traceId = traceId;
+  // Giả lập gửi Span tới Jaeger
+  console.log(`[Jaeger] Trace Started: ${traceId} | Path: ${req.method} ${req.url}`);
+  next();
+});
+
 // Auth Middleware
 
 /**
@@ -48,6 +59,7 @@ const authMiddleware = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     // Forward user info to downstream services via headers
     req.headers["x-user-id"] = decoded.userId;
+    req.headers["x-trace-id"] = req.traceId; // Chuyển tiếp TraceID tới Service
     next();
   } catch (error) {
     return res.status(401).json({ error: "Not authorized, token failed." });

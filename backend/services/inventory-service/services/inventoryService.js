@@ -13,6 +13,7 @@
 
 import mongoose from "mongoose";
 import { consume, publish } from "../../shared/rabbitmq/connection.js";
+import Idempotency from "../models/idempotencyModel.js";
 
 // Product model (inline for this service)
 const productSchema = new mongoose.Schema({
@@ -35,8 +36,19 @@ const Product = mongoose.models.Product || mongoose.model("Product", productSche
 
 export const startInventoryConsumer = async () => {
   await consume("order.created", "inventory_service_queue", async (orderPayload) => {
+    // Lấy traceId nếu có truyền hoặc sinh ra để tracking log
+    const traceId = orderPayload.traceId || `trace-${Math.random().toString(36).substring(7)}`;
     const { orderId, orderItems } = orderPayload;
-    console.log(`inventory-service: processing ORDER_CREATED for order ${orderId}`);
+    
+    console.log(`[Jaeger] Trace Continued: ${traceId} - inventory-service processing ORDER_CREATED for ${orderId}`);
+
+    // Idempotency: Kiểm tra message đã từng xử lý thành công chưa
+    const idemKey = `order_created_${orderId}`;
+    const alreadyProcessed = await Idempotency.findOne({ key: idemKey });
+    if (alreadyProcessed) {
+      console.log(`[Idempotency] Duplicate message detected for key: ${idemKey}. Skipping (Will ACK).`);
+      return; // Return smoothly to trigger automatic ACK in the shared consume function
+    }
 
     try {
       // 1. Reserve stock using atomic updates to prevent Overselling
@@ -74,6 +86,10 @@ export const startInventoryConsumer = async () => {
       }
 
       // 2. All items reserved successfully
+      
+      // Save idempotency key to prevent double-processing in the future
+      await Idempotency.create({ key: idemKey });
+      
       await publish("stock.reserved", {
         orderId,
         orderItems,
@@ -84,6 +100,8 @@ export const startInventoryConsumer = async () => {
     } catch (error) {
       console.error(`inventory-service error for order ${orderId}:`, error.message);
       await publish("stock.failed", { orderId, reason: error.message });
+      // Throw error to trigger Manual NACK in the shared consume logic, routing it to DLX
+      throw error;
     }
   });
 

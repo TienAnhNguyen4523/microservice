@@ -14,7 +14,9 @@
 
 import crypto from "crypto";
 import Order from "../models/orderModel.js";
+import Outbox from "../models/outboxModel.js";
 import { publish, consume } from "../../shared/rabbitmq/connection.js";
+import { bankApiBreaker } from "./circuitBreaker.js";
 
 //Price calculation
 
@@ -67,6 +69,17 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
 
   const { itemsPrice, taxPrice, shippingPrice, totalPrice } = calcPrices(orderItems);
 
+  // 1. Bank API check via Circuit Breaker
+  try {
+    await bankApiBreaker.fire(paymentMethod, totalPrice);
+    console.log(`[Bank Check] Success for order prep`);
+  } catch (error) {
+    throw new Error(`Payment Validation Failed: ${error.message}`);
+  }
+
+  // 2. Simulated ACID Transaction
+  // (In a real ReplicaSet setup, use mongodb session.startTransaction())
+  
   // Save order with status PENDING
   const order = new Order({
     orderItems,
@@ -84,17 +97,24 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
   const savedOrder = await order.save();
   console.log(`Order created: ${savedOrder._id} (status: PENDING)`);
 
-  // Publish ORDER_CREATED event for inventory-service to consume
-  await publish("order.created", {
-    orderId: savedOrder._id.toString(),
-    userId: user._id.toString(),
-    orderItems: savedOrder.orderItems.map((i) => ({
-      product: i.product.toString(),
-      qty: i.qty,
-      price: i.price,
-    })),
-    totalPrice: savedOrder.totalPrice,
+  // Instead of direct publish, write to Outbox table
+  const outboxMessage = new Outbox({
+    topic: "order.created",
+    payload: {
+      orderId: savedOrder._id.toString(),
+      userId: user._id.toString(),
+      orderItems: savedOrder.orderItems.map((i) => ({
+        product: i.product.toString(),
+        qty: i.qty,
+        price: i.price,
+      })),
+      totalPrice: savedOrder.totalPrice,
+    },
+    status: "PENDING"
   });
+  
+  await outboxMessage.save();
+  console.log(`Outbox message created for order: ${savedOrder._id}`);
 
   return savedOrder;
 };

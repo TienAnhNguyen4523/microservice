@@ -15,6 +15,7 @@ import cookieParser from "cookie-parser";
 import orderRoutes from "./routes/orderRoutes.js";
 import { connectRabbitMQ } from "../shared/rabbitmq/connection.js";
 import { consumePaymentEvents } from "./services/orderService.js";
+import { startOutboxRelayWorker } from "./services/outboxWorker.js";
 
 dotenv.config();
 
@@ -40,6 +41,9 @@ const start = async () => {
     // Start listening for payment results from payment-service
     await consumePaymentEvents();
     console.log("order-service listening for PAYMENT_SUCCESS / PAYMENT_FAILED");
+
+    // Khởi động Outbox Worker
+    startOutboxRelayWorker();
 
     app.listen(PORT, () => console.log(`order-service running on port ${PORT}`));
   } catch (error) {
