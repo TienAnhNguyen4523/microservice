@@ -34,7 +34,7 @@ const Product = mongoose.models.Product || mongoose.model("Product", productSche
 // Event handle
 
 export const startInventoryConsumer = async () => {
-  await consume("ORDER_CREATED", async (orderPayload) => {
+  await consume("order.created", "inventory_service_queue", async (orderPayload) => {
     const { orderId, orderItems } = orderPayload;
     console.log(`inventory-service: processing ORDER_CREATED for order ${orderId}`);
 
@@ -69,12 +69,12 @@ export const startInventoryConsumer = async () => {
           });
         }
         console.warn(`Insufficient stock for order ${orderId}. Rolled back partial reservations.`);
-        await publish("STOCK_FAILED", { orderId, reason: failureReason });
+        await publish("stock.failed", { orderId, reason: failureReason });
         return;
       }
 
       // 2. All items reserved successfully
-      await publish("STOCK_RESERVED", {
+      await publish("stock.reserved", {
         orderId,
         orderItems,
         totalPrice: orderPayload.totalPrice,
@@ -83,12 +83,12 @@ export const startInventoryConsumer = async () => {
       console.log(`inventory-service: STOCK_RESERVED published for order ${orderId}`);
     } catch (error) {
       console.error(`inventory-service error for order ${orderId}:`, error.message);
-      await publish("STOCK_FAILED", { orderId, reason: error.message });
+      await publish("stock.failed", { orderId, reason: error.message });
     }
   });
 
   // Saga Compensation: Restore inventory if Payment fails
-  await consume("PAYMENT_FAILED", async ({ orderId, reason, orderItems }) => {
+  await consume("payment.failed", "inventory_service_queue", async ({ orderId, reason, orderItems }) => {
     console.log(`STOCK COMPENSATION: PAYMENT_FAILED for order ${orderId}: ${reason}`);
     
     // Restore stock if items were provided in the payload
@@ -104,7 +104,7 @@ export const startInventoryConsumer = async () => {
     }
   });
 
-  await consume("STOCK_FAILED", async ({ orderId, reason }) => {
+  await consume("stock.failed", "inventory_service_queue", async ({ orderId, reason }) => {
     console.log(`STOCK_FAILED for order ${orderId}: ${reason}`);
     // Handled by order-service
   });

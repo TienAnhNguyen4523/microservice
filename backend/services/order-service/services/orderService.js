@@ -85,7 +85,7 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
   console.log(`Order created: ${savedOrder._id} (status: PENDING)`);
 
   // Publish ORDER_CREATED event for inventory-service to consume
-  await publish("ORDER_CREATED", {
+  await publish("order.created", {
     orderId: savedOrder._id.toString(),
     userId: user._id.toString(),
     orderItems: savedOrder.orderItems.map((i) => ({
@@ -107,7 +107,7 @@ export const createOrder = async ({ orderItems, shippingAddress, paymentMethod, 
  */
 export const consumePaymentEvents = async () => {
   // Success handler
-  await consume("PAYMENT_SUCCESS", async ({ orderId }) => {
+  await consume("payment.success", "order_service_queue", async ({ orderId }) => {
     console.log(`Payment success event received for order: ${orderId}`);
     
     const order = await Order.findById(orderId);
@@ -131,7 +131,7 @@ export const consumePaymentEvents = async () => {
   });
 
   // Failure handler
-  await consume("PAYMENT_FAILED", async ({ orderId }) => {
+  await consume("payment.failed", "order_service_queue", async ({ orderId }) => {
     console.log(`Payment failed for order: ${orderId}`);
     await Order.findByIdAndUpdate(orderId, { status: "FAILED" });
     console.log(`Order ${orderId} marked as FAILED`);

@@ -16,7 +16,7 @@ import { consume, publish } from "../../shared/rabbitmq/connection.js";
 const processedPayments = new Set();
 
 export const startPaymentConsumer = async () => {
-  await consume("STOCK_RESERVED", async (payload) => {
+  await consume("stock.reserved", "payment_service_queue", async (payload) => {
     const { orderId, totalPrice, orderItems } = payload;
 
     // 1. Idempotency Check: Prevent charging the user twice
@@ -37,7 +37,7 @@ export const startPaymentConsumer = async () => {
     const isSuccess = Math.random() < 0.9;
 
     if (isSuccess) {
-      await publish("PAYMENT_SUCCESS", {
+      await publish("payment.success", {
         orderId,
         transactionId: `txn_${Date.now()}`,
         amount: totalPrice,
@@ -48,7 +48,7 @@ export const startPaymentConsumer = async () => {
       // Remove from lock to allow retry if they trigger Webhook again
       processedPayments.delete(orderId);
       
-      await publish("PAYMENT_FAILED", {
+      await publish("payment.failed", {
         orderId,
         reason: "Payment declined by payment gateway (simulated)",
         orderItems, // Send orderItems back to inventory-service for compensation!
@@ -57,7 +57,7 @@ export const startPaymentConsumer = async () => {
     }
   });
 
-  await consume("STOCK_FAILED", async ({ orderId }) => {
+  await consume("stock.failed", "payment_service_queue", async ({ orderId }) => {
     console.log(`payment-service: skipping payment for order ${orderId} (stock failed)`);
     // No payment to process – order-service will handle STOCK_FAILED
   });

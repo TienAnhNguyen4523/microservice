@@ -9,17 +9,24 @@ import amqplib from "amqplib";
 const RABBITMQ_URL = process.env.RABBITMQ_URL || "amqp://localhost";
 
 let connection = null;
-let channel = null;
+let pubChannel = null;
+let subChannel = null;
+let isConnecting = false;
 
 /**
- * Connect to RabbitMQ and create a channel.
+ * Connect to RabbitMQ and create channels.
  * Retries every 5 seconds if connection fails (e.g., RabbitMQ not yet ready).
  */
 export const connectRabbitMQ = async () => {
+  if (isConnecting) return;
+  isConnecting = true;
+
   try {
     connection = await amqplib.connect(RABBITMQ_URL);
-    channel = await connection.createChannel();
+    pubChannel = await connection.createConfirmChannel();
+    subChannel = await connection.createChannel();
     console.log("Connected to RabbitMQ");
+    isConnecting = false;
 
     // Handle unexpected disconnections
     connection.on("error", (err) => {
@@ -34,6 +41,7 @@ export const connectRabbitMQ = async () => {
   } catch (error) {
     console.error("Failed to connect to RabbitMQ:", error.message);
     console.log("Retrying in 5 seconds...");
+    isConnecting = false;
     setTimeout(connectRabbitMQ, 5000);
   }
 };
@@ -42,60 +50,99 @@ export const connectRabbitMQ = async () => {
  * Attempt to re-establish the connection after a disconnect.
  */
 const reconnect = () => {
+  if (isConnecting) return;
   connection = null;
-  channel = null;
+  pubChannel = null;
+  subChannel = null;
   setTimeout(connectRabbitMQ, 5000);
 };
 
 /**
- * Get the current channel (throws if not yet connected).
+ * Get the publish channel (throws if not yet connected).
  */
-export const getChannel = () => {
-  if (!channel) throw new Error("RabbitMQ channel not initialized. Call connectRabbitMQ() first.");
-  return channel;
+export const getPubChannel = () => {
+  if (!pubChannel) throw new Error("RabbitMQ pubChannel not initialized. Call connectRabbitMQ() first.");
+  return pubChannel;
 };
 
 /**
- * Publish a message to a named queue.
- * @param {string} queue - Queue name (e.g., "ORDER_CREATED")
+ * Get the subscribe channel (throws if not yet connected).
+ */
+export const getSubChannel = () => {
+  if (!subChannel) throw new Error("RabbitMQ subChannel not initialized. Call connectRabbitMQ() first.");
+  return subChannel;
+};
+
+const EXCHANGE_NAME = "ecommerce_topic_exchange";
+
+/**
+ * Publish a message to a topic exchange.
+ * @param {string} routingKey - Routing key (e.g., "order.created")
  * @param {object} message - JSON-serializable payload
  */
-export const publish = async (queue, message) => {
-  const ch = getChannel();
-  // Assert the queue exists (idempotent)
-  await ch.assertQueue(queue, { durable: true });
-  // Send the message as a Buffer
-  ch.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
-    persistent: true, // Survive RabbitMQ broker restart
+export const publish = async (routingKey, message) => {
+  const ch = getPubChannel();
+  
+  // Assert the topic exchange exists
+  await ch.assertExchange(EXCHANGE_NAME, "topic", { durable: true });
+
+  // Send the message to the exchange, wait for confirm
+  return new Promise((resolve, reject) => {
+    ch.publish(
+      EXCHANGE_NAME, 
+      routingKey, 
+      Buffer.from(JSON.stringify(message)), 
+      { persistent: true }, 
+      (err, ok) => {
+        if (err !== null) {
+          console.warn(`Message nacked by broker: ${err}`);
+          reject(err);
+        } else {
+          console.log(`Published to Exchange [${EXCHANGE_NAME}] with key [${routingKey}]:`, message);
+          resolve(ok);
+        }
+    });
   });
-  console.log(`Published to [${queue}]:`, message);
 };
 
 /**
- * Consume messages from a queue.
- * @param {string} queue - Queue name to listen on
+ * Consume messages from a topic exchange.
+ * @param {string} routingKey - The routing key to bind to (e.g., "order.created" or "order.#")
+ * @param {string} queueName - Specific queue name for this service (e.g., "inventory_service_queue")
  * @param {function} handler - async function(parsedMessage) called for each message
  */
-export const consume = async (queue, handler) => {
-  const ch = getChannel();
-  await ch.assertQueue(queue, { durable: true });
+export const consume = async (routingKey, queueName, handler) => {
+  const ch = getSubChannel();
+  
+  // Assert the topic exchange exists
+  await ch.assertExchange(EXCHANGE_NAME, "topic", { durable: true });
+
+  // Assert the specific queue for this consumer service
+  await ch.assertQueue(queueName, { durable: true });
+
+  // Bind the queue to the exchange with the given routingKey
+  await ch.bindQueue(queueName, EXCHANGE_NAME, routingKey);
 
   // prefetch(1) ensures fair dispatch – only one unacked message per consumer at a time
   ch.prefetch(1);
 
-  console.log(`Listening on queue [${queue}]`);
+  console.log(`Listening on Queue [${queueName}] with Routing Key [${routingKey}]`);
 
-  ch.consume(queue, async (msg) => {
-    if (!msg) return;
-    try {
-      const content = JSON.parse(msg.content.toString());
-      await handler(content);
-      // Manually acknowledge after successful processing
-      ch.ack(msg);
-    } catch (error) {
-      console.error(`Error handling message from [${queue}]:`, error.message);
-      // Nack without requeue to avoid infinite retry loop
-      ch.nack(msg, false, false);
-    }
-  });
+  ch.consume(
+    queueName,
+    async (msg) => {
+      if (!msg) return;
+      try {
+        const content = JSON.parse(msg.content.toString());
+        await handler(content);
+        // Manually acknowledge after successful processing
+        ch.ack(msg);
+      } catch (error) {
+        console.error(`Error handling message from Queue [${queueName}]:`, error.message);
+        // Nack without requeue to avoid infinite retry loop
+        ch.nack(msg, false, false);
+      }
+    },
+    { noAck: false } // Explicitly state manual ACK is required
+  );
 };
